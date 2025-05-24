@@ -1,0 +1,82 @@
+import os
+import pickle
+from google.auth.transport.requests import Request
+from google.oauth2.credentials import Credentials
+from google_auth_oauthlib.flow import InstalledAppFlow
+from googleapiclient.discovery import build
+from googleapiclient.errors import HttpError
+
+SCOPES = ['https://www.googleapis.com/auth/forms.body']
+
+def authenticate():
+creds = None
+if os.path.exists('token.pickle'):
+with open('token.pickle', 'rb') as token:
+creds = pickle.load(token)
+
+if not creds or not creds.valid:
+if creds and creds.expired and creds.refresh_token:
+creds.refresh(Request())
+else:
+flow = InstalledAppFlow.from_client_secrets_file(
+'Web.Credentials.json', SCOPES)
+creds = flow.run_local_server(port=8080)
+
+with open('token.pickle', 'wb') as token:      
+    pickle.dump(creds, token)
+
+return creds
+
+def create_quiz():
+creds = authenticate()
+try:
+service = build('forms', 'v1', credentials=creds)
+form = {
+"info": {
+"title": "Quiz Title",
+"documentTitle": "Quiz Title"
+}
+}
+
+result = service.forms().create(body=form).execute()
+print(f'Form created: {result["responderUri"]}')
+
+questions = [    
+    # Replace this section with the new quiz questions provided.    
+    # Format: ("Question", ["Option1", "Option2", ...], correct_index)    
+]    
+
+requests = []    
+for i, (question, options, correct) in enumerate(questions):    
+    request = {    
+        "createItem": {    
+            "item": {    
+                "title": question,    
+                "questionItem": {    
+                    "question": {    
+                        "required": True,    
+                        "choiceQuestion": {    
+                            "type": "RADIO",    
+                            "options": [{"value": option} for option in options],    
+                            "shuffle": True    
+                        }    
+                    }    
+                }    
+            },    
+            "location": {"index": i}    
+        }    
+    }    
+    requests.append(request)    
+
+service.forms().batchUpdate(    
+    formId=result['formId'],    
+    body={"requests": requests}    
+).execute()    
+
+print('Questions added successfully!')
+
+except HttpError as error:
+print(f'An error occurred: {error}')
+
+if name == 'main':
+create_quiz()
