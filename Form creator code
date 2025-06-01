@@ -1,5 +1,6 @@
 import os
 import pickle
+import json # Added import
 from google.auth.transport.requests import Request
 from google.oauth2.credentials import Credentials
 from google_auth_oauthlib.flow import InstalledAppFlow
@@ -16,67 +17,188 @@ creds = pickle.load(token)
 
 if not creds or not creds.valid:
 if creds and creds.expired and creds.refresh_token:
+try:
 creds.refresh(Request())
+except Exception as e:
+print(f"Error refreshing credentials: {e}")
+creds = None # Invalidate creds if refresh fails
 else:
+try:
 flow = InstalledAppFlow.from_client_secrets_file(
 'Web.Credentials.json', SCOPES)
 creds = flow.run_local_server(port=8080)
+except Exception as e:
+print(f"Error during authentication flow: {e}")
+creds = None # Invalidate creds if flow fails
 
-with open('token.pickle', 'wb') as token:      
-    pickle.dump(creds, token)
-
+if creds: # Only write token if creds are valid
+with open('token.pickle', 'wb') as token:
+pickle.dump(creds, token)
 return creds
+return None # Explicitly return None if authentication fails
 
-def create_quiz():
+def _create_form_scaffold(service, form_title, document_title):
+    form_id = None
+    try:
+# Initial form creation
+form_body = {
+"info": {
+"title": form_title,
+"documentTitle": document_title
+            }
+        }
+result = service.forms().create(body=form_body).execute()
+print(f'Form scaffold created: {result["responderUri"]}')
+form_id = result['formId']
+except HttpError as e:
+print(f"Error creating form scaffold: {e}")
+return None # Return None if creation fails
+
+    try:
+# Request to update form settings to make it a quiz
+        quiz_setting_body = {
+"requests": [
+                {
+"updateSettings": {
+"settings": {
+"quizSettings": {"isQuiz": True}
+                            },
+"updateMask": "quizSettings" # New, broader mask
+                        }
+                }
+            ]
+        }
+service.forms().batchUpdate(
+formId=form_id,
+body=quiz_setting_body
+        ).execute()
+print(f"Form '{form_id}' settings updated to be a quiz.")
+return form_id # Return form_id on success
+    except HttpError as e:
+print(f"Error updating form settings to quiz: {e}")
+return None # Return None if quiz settings update fails
+
+def _add_questions_to_form(service, form_id, questions_data):
+    try:
+        requests = []
+# Add requests for each question
+for i, (question_text, options, correct_answer_index, points) in enumerate(questions_data):
+            request = {
+"createItem": {
+"item": {
+"title": question_text,
+"questionItem": {
+"question": {
+"required": True,
+"choiceQuestion": {
+"type": "RADIO",
+"options": [{"value": option_text} for option_text in options],
+"shuffle": True
+                                },
+"grading": {
+"pointValue": points,
+"correctAnswers": {
+"answers": [{"value": options[correct_answer_index]}]
+                                }
+                            }
+                        }
+                    }
+                },
+"location": {"index": i}
+            }
+            requests.append(request)
+
+if requests:
+# Print the JSON payload before sending
+print("---- BEGINNING OF REQUEST BODY ----")
+print(json.dumps({"requests": requests}, indent=2))
+print("---- END OF REQUEST BODY ----")
+service.forms().batchUpdate(
+formId=form_id,
+body={"requests": requests}
+            ).execute()
+print('Quiz questions added successfully!')
+return True
+        else:
+print("No questions provided to add.")
+return False
+    except HttpError as e:
+print(f"Error adding questions to form: {e}")
+return False
+
+def create_quiz(existing_form_id, questions_data): # Signature changed
 creds = authenticate()
+if not creds:
+print("Authentication failed. Exiting.")
+return
+
 try:
 service = build('forms', 'v1', credentials=creds)
-form = {
-"info": {
-"title": "Quiz Title",
-"documentTitle": "Quiz Title"
-}
-}
+except Exception as e: # Catch errors during service build
+print(f"Failed to build Forms API service: {e}")
+return
 
-result = service.forms().create(body=form).execute()
-print(f'Form created: {result["responderUri"]}')
+# Bypassing _create_form_scaffold, using existing_form_id directly
+if not existing_form_id:
+print("No existing form ID provided. Cannot add questions.")
+return
 
-questions = [    
-    # Replace this section with the new quiz questions provided.    
-    # Format: ("Question", ["Option1", "Option2", ...], correct_index)    
-]    
+# questions_data is passed to _add_questions_to_form with existing_form_id
+if not _add_questions_to_form(service, existing_form_id, questions_data):
+print("Failed to add questions to the quiz.")
+return
 
-requests = []    
-for i, (question, options, correct) in enumerate(questions):    
-    request = {    
-        "createItem": {    
-            "item": {    
-                "title": question,    
-                "questionItem": {    
-                    "question": {    
-                        "required": True,    
-                        "choiceQuestion": {    
-                            "type": "RADIO",    
-                            "options": [{"value": option} for option in options],    
-                            "shuffle": True    
-                        }    
-                    }    
-                }    
-            },    
-            "location": {"index": i}    
-        }    
-    }    
-    requests.append(request)    
+print("Quiz questions successfully added to the existing form.")
 
-service.forms().batchUpdate(    
-    formId=result['formId'],    
-    body={"requests": requests}    
-).execute()    
 
-print('Questions added successfully!')
+if __name__ == '__main__':
+    manual_form_id = input("Enter the ID of your existing Google Form (which you've manually set as a quiz): ")
 
-except HttpError as error:
-print(f'An error occurred: {error}')
+    user_questions = []
+print("\n--- Add Questions (for existing form) ---")
+while True:
+        question_text = input("Enter question text (or type 'done' to finish): ")
+if question_text.lower() == 'done':
+break
 
-if name == 'main':
-create_quiz()
+        options = []
+print("Enter options for the question:")
+while True:
+            option_text = input("Enter option text (or type 'done' if you have at least 2 options): ")
+if option_text.lower() == 'done':
+if len(options) >= 2:
+break
+else:
+print("Please add at least 2 options before typing 'done'.")
+continue
+options.append(option_text)
+
+while True:
+try:
+                correct_answer_index_str = input(f"Enter the index of the correct answer (0 to {len(options) - 1}): ")
+                correct_answer_index = int(correct_answer_index_str)
+if 0 <= correct_answer_index < len(options):
+break
+else:
+print(f"Invalid index. Please enter a number between 0 and {len(options) - 1}.")
+except ValueError:
+print("Invalid input. Please enter a number for the index.")
+
+while True:
+try:
+                points_str = input("Enter the point value for this question (must be a positive integer): ")
+                points = int(points_str)
+if points > 0:
+break
+else:
+print("Point value must be a positive integer.")
+except ValueError:
+print("Invalid input. Please enter a number for the point value.")
+
+        user_questions.append((question_text, options, correct_answer_index, points))
+print("--- Question Added ---\n")
+
+if user_questions:
+create_quiz(manual_form_id, user_questions)
+else:
+print("No questions added. Exiting.")
